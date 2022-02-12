@@ -2,6 +2,12 @@ import locale
 import curses
 locale.setlocale(locale.LC_ALL,"")
 
+class Colors:
+    NORMAL = 1
+    CLIENT = 2
+    SERVER_SUCCESS = 3
+    SERVER_FAIL = 4
+
 class ScreenNotInitialized(Exception):
     pass
 
@@ -177,9 +183,12 @@ class ChatUI:
 
             self._active_win.on_keypress(pressed_key)
     
-    def add_to_log(self, item, color = 1):
+    def add_to_log(self, item, color = Colors.NORMAL):
         self._log_scr.update_log(item, color)
         self._input_scr._refresh_input()
+
+    def clear_log(self):
+        self._log_scr._clear_log()
 
     def set_input_callback(self, callback):
         self._input_callback = callback
