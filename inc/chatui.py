@@ -141,7 +141,7 @@ class ChatUI:
 
         while True:
             pressed_key = self._strscr.getkey()
-            
+
             if type(pressed_key) == str and len(pressed_key) > 1:
                 self._active_win.on_keypress(pressed_key)
                 continue
@@ -155,7 +155,7 @@ class ChatUI:
                 if len(inp := self._input_scr.get_input()) > 0:
                     if self._input_callback:
                         self._input_callback(inp)
-                        self._input_scr.clear_input()
+                    self._input_scr.clear_input()
                 continue
 
             self._active_win.on_keypress(pressed_key)
