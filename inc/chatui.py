@@ -1,4 +1,5 @@
 import locale
+import curses
 locale.setlocale(locale.LC_ALL,"")
 
 class ScreenNotInitialized(Exception):
@@ -12,7 +13,21 @@ class ChatUI_Log:
         self._screen.refresh()
 
         self._full_log = []
+        if curses.has_colors():
+            curses.start_color()
+
+            # Normie color
+            curses.init_pair(1, curses.COLOR_WHITE, curses.COLOR_BLACK)
+            
+            # Client-side message color
+            curses.init_pair(2, curses.COLOR_BLACK, curses.COLOR_WHITE)
+            
+            # Server-side success
+            curses.init_pair(3, curses.COLOR_BLACK, curses.COLOR_GREEN)
     
+            # Server-side fail
+            curses.init_pair(4, curses.COLOR_BLACK, curses.COLOR_RED)
+
     def _clear_log(self):
         self._full_log = []
         self._refresh_log()
@@ -23,19 +38,22 @@ class ChatUI_Log:
         y = 1
 
         for item in self._full_log:
-            self._screen.addstr(y,1,item)
+            if curses.has_colors():
+                self._screen.addstr(y,1,item['text'], curses.color_pair(item['color']))
+            else:
+                self._screen.addstr(y,1,item['text'])
             y += 1
         self._screen.refresh()
 
-    def update_log(self, item: str):
-        self._full_log.append(item)
+    def update_log(self, item: str, color = 1):
+        self._full_log.append({'text': item, "color": color})
 
         tmp_log = []
         for item in self._full_log:
-            while len(item) > self.WIDTH - 2:
-                tmp_log.append(item[0:self.WIDTH - 2])
-                item = item[self.WIDTH - 2::]
-            if len(item) > 0:
+            while len(item['text']) > self.WIDTH - 2:
+                tmp_log.append({'text': item['text'][0:self.WIDTH - 2], "color": item['color']})
+                item['text'] = item['text'][self.WIDTH - 2::]
+            if len(item['text']) > 0:
                 tmp_log.append(item)
         
         if len(tmp_log) > self.HEIGHT - 2:
@@ -116,7 +134,6 @@ class ChatUI_Input:
                 self._full_input += key
                 self._refresh_input()
             
-
 class ChatUI:
     def __init__(self, _input_callback = None):
         self._strscr = None
@@ -160,9 +177,12 @@ class ChatUI:
 
             self._active_win.on_keypress(pressed_key)
     
-    def add_to_log(self, item):
-        self._log_scr.update_log(item)
+    def add_to_log(self, item, color = 1):
+        self._log_scr.update_log(item, color)
         self._input_scr._refresh_input()
+
+    def set_input_callback(self, callback):
+        self._input_callback = callback
 
     def _build_strscr(self):
         if not self._strscr:
