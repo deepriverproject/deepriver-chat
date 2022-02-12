@@ -141,9 +141,7 @@ class ChatUI:
 
         while True:
             pressed_key = self._strscr.getkey()
-            with open('lol.txt', 'a') as f:
-                f.write(f"{str(ord(pressed_key)) if len(pressed_key) < 2 else pressed_key} ")
-
+            
             if type(pressed_key) == str and len(pressed_key) > 1:
                 self._active_win.on_keypress(pressed_key)
                 continue
