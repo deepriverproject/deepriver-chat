@@ -1,5 +1,9 @@
 import os
 import configparser
+import socket
+import threading
+from base64 import b64encode, b64decode
+import platform
 
 # ===========[ ERRORS ]===========
 
@@ -14,17 +18,73 @@ class InvalidConfig(Exception):
 
 # ===========[ ENUMS ]===========
 class ServerType:
-    PUBLIC = 0
-    SEMIPUBLIC = 1
-    SEMIPRIVATE = 2
-    PRIVATE = 3
+    PUBLIC = "public"
+    SEMIPUBLIC = "semipublic"
+    SEMIPRIVATE = "semiprivate"
+    PRIVATE = "private"
+
+class PacketHeader:
+    ERROR = "ERROR"
+    SUCCESS = "SUCCESS"
+    BANNER = "BANNER"
+    PUBLIC_KEY = "PUBLIC_KEY"
+    CONNPASS = "CONNPASS"
+    CHAL = "CHAL"
+    MSG_NORMAL = "MSG_NORMAL"
+    MSG_CLIENT = "MSG_CLIENT"
+    MSG_SRV_SUCCESS = "MSG_SRV_SUCCESS"
+    MSG_SRV_DISCONNECT = "MSG_SRV_FAIL"
+    DISCONNECT = "DISCONNECT"
 
 # ===========[ DeepRiver_Server ]===========
 class DeepRiver_Server:
+    __version__ = "0.0.1"
+
     def __init__(self, config=None):
         self._set_default_config()
         if config:
-            self._parse_config(self, config)
+            self._parse_config(config)
+        
+        self._clients = {}
+    
+    def start(self):
+        self._server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self._server.bind((self._host, self._port))
+        self._server.listen(5)
+
+        print("Starting")
+        while True:
+            client, addr = self._server.accept()
+            addr = addr[0]
+            print("Conn: " + addr)
+            #TODO: Create ban check
+
+            threading.Thread(target=self._connection_init, args=(client,addr,)).start()
+    
+    def _connection_init(self, client: socket.socket, addr):
+        print("Got connection: " + addr)
+        client.settimeout(self._connection_init_timeout if self._connection_init_timeout != 0 else None)
+        packet = PacketHeader.BANNER + ' '
+        if self._verbosity == 0:
+            packet += b64encode((f"DeepRiver {self.__version__}").encode()).decode()
+        else:
+            packet += b64encode(f"DeepRiver {self.__version__} {platform.platform()}".encode()).decode()
+        if self._type == ServerType.PUBLIC or self._type == ServerType.SEMIPRIVATE:
+            packet += ' '
+            packet += b64encode(self._public_key).decode()
+        client.send(packet.encode())
+        client.close()
+        print("Closed connection: " + addr)
+
+    
+    def _client_loop(self, client, addr):
+        pass
+    
+    def _disconnect_client(self, client):
+        pass
+
+    def _disconnect_all_clients(self):
+        pass
 
     def _parse_config(self, config):
         if not os.path.isfile(config):
@@ -56,7 +116,8 @@ class DeepRiver_Server:
                     self._type = ServerType.SEMIPRIVATE
                 elif scfg['Type'] == 'private':
                     self._type = ServerType.PRIVATE
-                raise InvalidConfig("invalid server type: " + str(scfg['Type']))
+                else:
+                    raise InvalidConfig("invalid server type: " + str(scfg['Type']))
             
             if 'ServerPassword' in scfg:
                 self._server_password = scfg['ServerPassword']
@@ -127,7 +188,7 @@ class DeepRiver_Server:
                 self._admins = {}
                 i = 0
                 for uid in acfg['Usernames'].split(','):
-                    self._admin.update({uid, acfg['Passwords'].split(',')[i]})
+                    self._admins.update({uid: acfg['Passwords'].split(',')[i]})
                     i += 1
 
     def _set_default_config(self):
@@ -158,7 +219,3 @@ class DeepRiver_Server:
             self._banner_file = f.read()
         self._enable_admin = False
         self._admins = {}
-
-    
-    
-        

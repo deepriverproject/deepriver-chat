@@ -1,2 +1,6 @@
 __pycache__/
 venv/
+keys/
+banned.txt
+banner.txt
+test_*
