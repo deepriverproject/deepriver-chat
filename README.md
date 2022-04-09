@@ -119,6 +119,7 @@ C <- ConnPass("DONE") <- S
 |MSG_SRV_SUCCESS|This header notates that the payload of the packet is a server message that is usually sent when something successful happens. This type of message will usually be sent by the server.|
 |MSG_SRV_FAIL|This header notates that the payload of the packet is a server message that is usually sent when something unsuccessful happens. This type of message will usually be sent by the server.|
 |DISCONNECT|This header notates that the client wants to disconnect. In that case, the server starts a soft-disconnect process to peacefully detatch the client connection from the server.|
+|NICKNAME|This headers meaning differs by which party sends it. If the server sends this header, it means that the server is awaiting the client to send a nickname to be assigned. If a client sends this header, this means that the client is requesting the server to change the nickname of the user to the one provided in the payload.|
 
 # Errors
 WIP

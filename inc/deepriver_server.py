@@ -1,9 +1,14 @@
 import os
 import configparser
+import re
 import socket
+from struct import pack
 import threading
 from base64 import b64encode, b64decode
 import platform
+import random
+from crypto import Cryptography
+crypt = Cryptography()
 
 # ===========[ ERRORS ]===========
 
@@ -17,24 +22,7 @@ class InvalidConfig(Exception):
     pass
 
 # ===========[ ENUMS ]===========
-class ServerType:
-    PUBLIC = "public"
-    SEMIPUBLIC = "semipublic"
-    SEMIPRIVATE = "semiprivate"
-    PRIVATE = "private"
-
-class PacketHeader:
-    ERROR = "ERROR"
-    SUCCESS = "SUCCESS"
-    BANNER = "BANNER"
-    PUBLIC_KEY = "PUBLIC_KEY"
-    CONNPASS = "CONNPASS"
-    CHAL = "CHAL"
-    MSG_NORMAL = "MSG_NORMAL"
-    MSG_CLIENT = "MSG_CLIENT"
-    MSG_SRV_SUCCESS = "MSG_SRV_SUCCESS"
-    MSG_SRV_DISCONNECT = "MSG_SRV_FAIL"
-    DISCONNECT = "DISCONNECT"
+from enums import *
 
 # ===========[ DeepRiver_Server ]===========
 class DeepRiver_Server:
@@ -45,46 +33,186 @@ class DeepRiver_Server:
         if config:
             self._parse_config(config)
         
-        self._clients = {}
+        self._clients = []
     
     def start(self):
+        self._log("MAIN", f"DeepRiver Server {self.__version__}")
+        self._log("MAIN", f"Starting server...")
         self._server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self._server.bind((self._host, self._port))
         self._server.listen(5)
-
-        print("Starting")
+        self._log("MAIN", f"Server started, listener active on {self._host}:{self._port}")
         while True:
             client, addr = self._server.accept()
             addr = addr[0]
-            print("Conn: " + addr)
+            port = addr[1]
+            self._log("MAIN", f"Connection recieved from {addr}")
+
             #TODO: Create ban check
 
-            threading.Thread(target=self._connection_init, args=(client,addr,)).start()
-    
-    def _connection_init(self, client: socket.socket, addr):
-        print("Got connection: " + addr)
-        client.settimeout(self._connection_init_timeout if self._connection_init_timeout != 0 else None)
-        packet = PacketHeader.BANNER + ' '
-        if self._verbosity == 0:
-            packet += b64encode((f"DeepRiver {self.__version__}").encode()).decode()
-        else:
-            packet += b64encode(f"DeepRiver {self.__version__} {platform.platform()}".encode()).decode()
-        if self._type == ServerType.PUBLIC or self._type == ServerType.SEMIPRIVATE:
-            packet += ' '
-            packet += b64encode(self._public_key).decode()
-        client.send(packet.encode())
-        client.close()
-        print("Closed connection: " + addr)
+            threading.Thread(target=self._connection_init, args=(client,addr,port)).start()
+            self._log("MAIN", f"Pre-connection thread spawned for {addr}")
 
     
+    def _connection_init(self, client: socket.socket, addr, port):
+        ident = threading.get_ident()
+        self._log(f"PRECONNECTION:{ident}", f"Pre-connection thread {ident} started ({addr}:{port})")
+        client.settimeout(self._connection_init_timeout if self._connection_init_timeout != 0 else None)
+
+        if self._verbosity == 0:
+            payload = b64encode((f"DeepRiver {self.__version__}").encode()).decode()
+        else:
+            payload = b64encode(f"DeepRiver {self.__version__} {platform.platform()}".encode()).decode()
+        if self._type == ServerType.PUBLIC or self._type == ServerType.SEMIPRIVATE:
+            payload += ' '
+            payload += b64encode(self._public_key).decode()
+        client.send(self._build_packet(PacketHeader.BANNER, payload))
+        try:
+            data = self._parse_packet(client.recv(4096))
+        except Exception as e:
+            self._disconnect_client(client)
+            self._log(f"PRECONNECTION:{ident}", f"Client timed out. Closing thread...")
+            return
+
+        if data['header'] != PacketHeader.PUBLIC_KEY:
+            client.send(self._build_packet(PacketHeader.ERROR, b64encode(ServerErrors.INVALID_PACKET_HEADER)))
+            self._disconnect_client(client)
+            self._log(f"PRECONNECTION:{ident}", f"Recieved a wrong header. Closing thread...")
+            return
+
+        client_public_key = data['payload']
+
+        chal_int = random.randint(10000, 99999)
+        try:
+            chal_enc = crypt.rsa_encrypt(client_public_key, str(chal_int))
+        except:
+            client.send(self._build_packet(PacketHeader.ERROR, b64encode(ServerErrors.INVALID_PUBLIC_KEY)))
+            self._disconnect_client(client)
+            self._log(f"PRECONNECTION:{ident}", f"Recieved invalid client public key. Closing thread...")
+            return
+        client.send(self._build_packet(PacketHeader.CHAL, b64encode(chal_enc)))
+
+        try:
+            data = self._parse_packet(client.recv(4096))
+        except socket.error:
+            self._disconnect_client(client)
+            self._log(f"PRECONNECTION:{ident}", f"Client timed out. Closing thread...")
+            return
+        except Exception as e:
+            self._disconnect_client(client)
+            self._log(f"PRECONNECTION:{ident}", f"Urecognized error: {e}")
+            return
+        
+        if data['header'] != PacketHeader.CHAL:
+            client.send(self._build_packet(PacketHeader.ERROR, b64encode(ServerErrors.INVALID_PACKET_HEADER)))
+            self._disconnect_client(client)
+            self._log(f"PRECONNECTION:{ident}", f"Recieved a wrong header. Closing thread...")
+            return
+        try:
+            client_chal_int = int(crypt.rsa_decrypt(self._private_key, data['payload']))
+            if client_chal_int != chal_int+1:
+                client.send(self._build_packet(PacketHeader.ERROR, b64encode(ServerErrors.CHALLENGE_FAILED)))
+                self._disconnect_client(client)
+                self._log(f"PRECONNECTION:{ident}", f"Client failed the challenge. Closing thread...")
+                return
+        except:
+            client.send(self._build_packet(PacketHeader.ERROR, b64encode(ServerErrors.CHALLENGE_FAILED)))
+            self._disconnect_client(client)
+            self._log(f"PRECONNECTION:{ident}", f"Client failed the challenge. Closing thread...")
+            return
+        
+        client_connpass = crypt.generate_aes_key()
+        client.send(self._build_packet(PacketHeader.CONNPASS, crypt.rsa_encrypt(client_public_key, b64encode(client_connpass))))
+
+        chal_int = random.randint(10000, 99999)
+
+        client.send(self._build_packet_secure(client_connpass, PacketHeader.CHAL, str(chal_int)))
+
+        try:
+            data = self._parse_packet_secure(client_connpass, client.recv(4096))
+            if data['header'] != PacketHeader.CHAL:
+                client.send(self._build_packet(PacketHeader.ERROR, b64encode(ServerErrors.INVALID_PACKET_HEADER)))
+                self._disconnect_client(client)
+                self._log(f"PRECONNECTION:{ident}", f"Recieved a wrong header. Closing thread...")
+                return
+        except:
+            self._disconnect_client(client)
+            self._log(f"PRECONNECTION:{ident}", f"Client sent malformed challenge. Closing thread...")
+            return
+        
+        try:
+            client_chal_int = data['payload']
+            if int(client_chal_int) != chal_int+1:
+                client.send(self._build_packet(PacketHeader.ERROR, b64encode(ServerErrors.CHALLENGE_FAILED)))
+                self._disconnect_client(client)
+                self._log(f"PRECONNECTION:{ident}", f"Client failed the challenge. Closing thread...")
+                return
+        except:
+            client.send(self._build_packet(PacketHeader.ERROR, b64encode(ServerErrors.CHALLENGE_FAILED)))
+            self._disconnect_client(client)
+            self._log(f"PRECONNECTION:{ident}", f"Client failed the challenge. Closing thread...")
+
+        client.send(self._build_packet_secure(client_connpass, PacketHeader.SUCCESS, "DONE"))
+        
+        self._disconnect_client(client)
+        self._log(f"PRECONNECTION:{ident}", f"Client connected! Closing thread...")
+        return
+
+        client.send(self._build_packet_secure(client_connpass, PacketHeader.NICKNAME, b64encode(b"NICKNAME")))
+        try:
+            data = self._parse_packet_secure(client_connpass, client.recv(4096))
+            if data['header'] != PacketHeader.NICKNAME:
+                client.send(self._build_packet(PacketHeader.ERROR, b64encode(ServerErrors.INVALID_PACKET_HEADER)))
+                self._disconnect_client(client)
+                self._log(f"PRECONNECTION:{ident}", f"Recieved a wrong header. Closing thread...")
+                return
+        except:
+            self._disconnect_client(client)
+            self._log(f"PRECONNECTION:{ident}", f"Client sent malformed challenge. Closing thread...")
+            return
+
+
+
+        #self._disconnect_client(client)
+        #self._log(f"PRECONNECTION:{ident}", f"Client connected! Closing thread...")
+        return
+
+    def _connection_handler(self, client: socket.socket, host: tuple, nick: str):
+        pass
+
+    def _log(self, name, message, mtype="info"):
+        print(f"[*] ({name}) >> {message}")
+
     def _client_loop(self, client, addr):
         pass
     
-    def _disconnect_client(self, client):
-        pass
+    def _disconnect_client(self, client: socket.socket):
+        client.close()
 
     def _disconnect_all_clients(self):
         pass
+    
+    def _build_packet(self, header: PacketHeader, payload) -> bytes:
+        return header.encode() + b' ' + b64encode(payload.encode() if type(payload) != bytes else payload)
+    
+    def _build_packet_secure(self, conpass, header: PacketHeader, payload):
+        enc = crypt.aes_encrypt(conpass, self._build_packet(header, payload))
+        return b64encode(enc['ciphertext'] + b' ' + enc['nonce'])
+
+    def _parse_packet(self, packet: bytes):
+        p = packet.decode().split(' ')
+        return {
+            'header': p[0],
+            'payload': b64decode(p[1])
+        }
+    
+    def _parse_packet_secure(self, connpass, packet: bytes):
+        p_enc = b64decode(packet).decode().split(' ')
+        p_dec = crypt.aes_decrypt(connpass,b64decode(p_enc[0]),b64decode(p_enc[1])).decode().split()
+        return {
+            'header': p_dec[0],
+            'payload': b64decode(p_dec[1]).decode()
+        }
 
     def _parse_config(self, config):
         if not os.path.isfile(config):
@@ -192,6 +320,8 @@ class DeepRiver_Server:
                     i += 1
 
     def _set_default_config(self):
+        #FIXME: Create so that existing config goes first and then gets set a default value IF not present in config.
+
         self._host = "localhost"
         self._port = 10101
         self._type = ServerType.PUBLIC
@@ -219,3 +349,6 @@ class DeepRiver_Server:
             self._banner_file = f.read()
         self._enable_admin = False
         self._admins = {}
+
+l = DeepRiver_Server()
+l.start()
