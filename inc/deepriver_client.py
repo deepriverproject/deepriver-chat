@@ -71,7 +71,7 @@ class DeepRiver_Client:
             self._s.close()
             return False
         
-        chal_decrypted = int(crypt.rsa_decrypt(self.client_info['private_key'], b64d(data['payload'])).decode())
+        chal_decrypted = int(crypt.rsa_decrypt(self.client_info['private_key'], data['payload']).decode())
         chal_response = crypt.rsa_encrypt(self.server_info['public_key'], str(chal_decrypted+1))
         self._s.send(self._build_packet(PacketHeader.CHAL, chal_response))
 
@@ -109,7 +109,6 @@ class DeepRiver_Client:
 
     def _get_server_banner(self):
         data = self._s.recv(4096).decode()
-
         if len(dspl := data.split(' ')) < 2:
             self._log("Invalid banner: Malformed packet. Dump:")
             self._log(data.decode())
@@ -123,8 +122,8 @@ class DeepRiver_Client:
         if len(pspl := payload.split(' ')) == 1:
             return b64d(pspl[0].encode()).decode()
         else:
-            self.server_info['public_key'] = b64d(pspl[1]).decode()
-            return b64d(pspl[0].encode()).decode()
+            self.server_info['public_key'] = b64d(pspl[1].encode()).decode()
+            return pspl[0]
 
     def _establish_conpass(self):
         pass

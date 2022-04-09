@@ -1,3 +1,4 @@
+import base64
 import os
 import configparser
 import re
@@ -59,13 +60,17 @@ class DeepRiver_Server:
         self._log(f"PRECONNECTION:{ident}", f"Pre-connection thread {ident} started ({addr}:{port})")
         client.settimeout(self._connection_init_timeout if self._connection_init_timeout != 0 else None)
 
+        #FIXME: Shorten this
         if self._verbosity == 0:
-            payload = b64encode((f"DeepRiver {self.__version__}").encode()).decode()
+            payload = f"DeepRiver {self.__version__}"
         else:
-            payload = b64encode(f"DeepRiver {self.__version__} {platform.platform()}".encode()).decode()
+            payload = f"DeepRiver {self.__version__} {platform.platform()}"
+        
+        payload = b64encode(payload.encode())
+
         if self._type == ServerType.PUBLIC or self._type == ServerType.SEMIPRIVATE:
-            payload += ' '
-            payload += b64encode(self._public_key).decode()
+            payload += b' '
+            payload += b64encode(self._public_key)
         client.send(self._build_packet(PacketHeader.BANNER, payload))
         try:
             data = self._parse_packet(client.recv(4096))
@@ -75,7 +80,7 @@ class DeepRiver_Server:
             return
 
         if data['header'] != PacketHeader.PUBLIC_KEY:
-            client.send(self._build_packet(PacketHeader.ERROR, b64encode(ServerErrors.INVALID_PACKET_HEADER)))
+            client.send(self._build_packet(PacketHeader.ERROR, ServerErrors.INVALID_PACKET_HEADER))
             self._disconnect_client(client)
             self._log(f"PRECONNECTION:{ident}", f"Recieved a wrong header. Closing thread...")
             return
@@ -86,11 +91,11 @@ class DeepRiver_Server:
         try:
             chal_enc = crypt.rsa_encrypt(client_public_key, str(chal_int))
         except:
-            client.send(self._build_packet(PacketHeader.ERROR, b64encode(ServerErrors.INVALID_PUBLIC_KEY)))
+            client.send(self._build_packet(PacketHeader.ERROR, ServerErrors.INVALID_PUBLIC_KEY))
             self._disconnect_client(client)
             self._log(f"PRECONNECTION:{ident}", f"Recieved invalid client public key. Closing thread...")
             return
-        client.send(self._build_packet(PacketHeader.CHAL, b64encode(chal_enc)))
+        client.send(self._build_packet(PacketHeader.CHAL, chal_enc))
 
         try:
             data = self._parse_packet(client.recv(4096))
@@ -104,19 +109,19 @@ class DeepRiver_Server:
             return
         
         if data['header'] != PacketHeader.CHAL:
-            client.send(self._build_packet(PacketHeader.ERROR, b64encode(ServerErrors.INVALID_PACKET_HEADER)))
+            client.send(self._build_packet(PacketHeader.ERROR, ServerErrors.INVALID_PACKET_HEADER))
             self._disconnect_client(client)
             self._log(f"PRECONNECTION:{ident}", f"Recieved a wrong header. Closing thread...")
             return
         try:
             client_chal_int = int(crypt.rsa_decrypt(self._private_key, data['payload']))
             if client_chal_int != chal_int+1:
-                client.send(self._build_packet(PacketHeader.ERROR, b64encode(ServerErrors.CHALLENGE_FAILED)))
+                client.send(self._build_packet(PacketHeader.ERROR, ServerErrors.CHALLENGE_FAILED))
                 self._disconnect_client(client)
                 self._log(f"PRECONNECTION:{ident}", f"Client failed the challenge. Closing thread...")
                 return
         except:
-            client.send(self._build_packet(PacketHeader.ERROR, b64encode(ServerErrors.CHALLENGE_FAILED)))
+            client.send(self._build_packet(PacketHeader.ERROR, ServerErrors.CHALLENGE_FAILED))
             self._disconnect_client(client)
             self._log(f"PRECONNECTION:{ident}", f"Client failed the challenge. Closing thread...")
             return
@@ -131,7 +136,7 @@ class DeepRiver_Server:
         try:
             data = self._parse_packet_secure(client_connpass, client.recv(4096))
             if data['header'] != PacketHeader.CHAL:
-                client.send(self._build_packet(PacketHeader.ERROR, b64encode(ServerErrors.INVALID_PACKET_HEADER)))
+                client.send(self._build_packet(PacketHeader.ERROR, ServerErrors.INVALID_PACKET_HEADER))
                 self._disconnect_client(client)
                 self._log(f"PRECONNECTION:{ident}", f"Recieved a wrong header. Closing thread...")
                 return
@@ -143,12 +148,12 @@ class DeepRiver_Server:
         try:
             client_chal_int = data['payload']
             if int(client_chal_int) != chal_int+1:
-                client.send(self._build_packet(PacketHeader.ERROR, b64encode(ServerErrors.CHALLENGE_FAILED)))
+                client.send(self._build_packet(PacketHeader.ERROR, ServerErrors.CHALLENGE_FAILED))
                 self._disconnect_client(client)
                 self._log(f"PRECONNECTION:{ident}", f"Client failed the challenge. Closing thread...")
                 return
         except:
-            client.send(self._build_packet(PacketHeader.ERROR, b64encode(ServerErrors.CHALLENGE_FAILED)))
+            client.send(self._build_packet(PacketHeader.ERROR, ServerErrors.CHALLENGE_FAILED))
             self._disconnect_client(client)
             self._log(f"PRECONNECTION:{ident}", f"Client failed the challenge. Closing thread...")
 
@@ -157,7 +162,7 @@ class DeepRiver_Server:
         self._disconnect_client(client)
         self._log(f"PRECONNECTION:{ident}", f"Client connected! Closing thread...")
         return
-
+        
         client.send(self._build_packet_secure(client_connpass, PacketHeader.NICKNAME, b64encode(b"NICKNAME")))
         try:
             data = self._parse_packet_secure(client_connpass, client.recv(4096))
