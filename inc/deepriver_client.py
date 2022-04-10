@@ -97,8 +97,35 @@ class DeepRiver_Client:
 
         chal_decrypted = int(data['payload'])
         self._s.send(self._build_packet_secure(self.client_info['connpass'], PacketHeader.CHAL, str(chal_decrypted+1)))
-        print(self._parse_packet_secure(self.client_info['connpass'], self._s.recv(4096)))
-        self._s.close()
+        data = self._parse_packet_secure(self.client_info['connpass'], self._s.recv(4096))
+        if data['header'] != PacketHeader.SUCCESS:
+            if data['header'] == PacketHeader.ERROR:
+                self._log(f"Error: {data['payload']}")
+            else:
+                self._log(f"Unknown packet: {data['header']}")
+            self._s.close()
+            return False
+        
+        data = self._parse_packet_secure(self.client_info['connpass'],self._s.recv(4096))
+        if data['header'] != PacketHeader.NICKNAME:
+            if data['header'] == PacketHeader.ERROR:
+                self._log(f"Error: {data['payload']}")
+            else:
+                self._log(f"Unknown packet: {data['header']}")
+            self._s.close()
+            return False
+        
+        self._s.send(self._build_packet_secure(self.client_info['connpass'], PacketHeader.NICKNAME, nickname))
+        data = self._parse_packet_secure(self.client_info['connpass'], self._s.recv(4096))
+        if data['header'] != PacketHeader.SUCCESS:
+            if data['header'] == PacketHeader.ERROR:
+                self._log(f"Error: {data['payload']}")
+            else:
+                self._log(f"Unknown packet: {data['header']}")
+            self._s.close()
+            return False
+
+        self._s.send(self._build_packet_secure(self.client_info['connpass'], PacketHeader.DISCONNECT, b"DISCONNECT"))
         print("Done")
 
     def disconnect(self):

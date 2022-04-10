@@ -211,19 +211,20 @@ class DeepRiver_Server:
         try:
             data = self._parse_packet_secure(client_connpass, client.recv(4096))
             if data['header'] != PacketHeader.NICKNAME:
-                client.send(self._build_packet(PacketHeader.ERROR, ServerErrors.INVALID_PACKET_HEADER))
+                client.send(self._build_packet_secure(client_connpass, PacketHeader.ERROR, ServerErrors.INVALID_PACKET_HEADER))
                 self._disconnect_client(client)
                 self._log(f"PRECONNECTION:{ident}", f"Recieved a wrong header. Closing thread...")
                 del self._preconnections[ident]
                 return
         except:
+            client.send(self._build_packet_secure(client_connpass, PacketHeader.ERROR, ServerErrors.INVALID_NICKNAME))
             self._disconnect_client(client)
             self._log(f"PRECONNECTION:{ident}", f"Client sent malformed nickname packet. Closing thread...")
             del self._preconnections[ident]
             return
 
         if not self._check_nickname(data['payload']):
-            client.send(self._build_packet(PacketHeader.ERROR, ServerErrors.INVALID_NICKNAME))
+            client.send(self._build_packet_secure(client_connpass, PacketHeader.ERROR, ServerErrors.INVALID_NICKNAME))
             self._disconnect_client(client)
             self._log(f"PRECONNECTION:{ident}", f"Recieved an invalid nickname. Closing thread...")
             del self._preconnections[ident]
@@ -231,7 +232,7 @@ class DeepRiver_Server:
 
         for c in self._clients:
             if c == data['payload']:
-                client.send(self._build_packet(PacketHeader.ERROR, ServerErrors.NICKNAME_TAKEN))
+                client.send(self._build_packet_secure(client_connpass, PacketHeader.ERROR, ServerErrors.NICKNAME_TAKEN))
                 self._disconnect_client(client)
                 self._log(f"PRECONNECTION:{ident}", f"Recieved a taken nickname. Closing thread...")
                 del self._preconnections[ident]
@@ -239,7 +240,7 @@ class DeepRiver_Server:
         nickname = data['payload']
         client.send(self._build_packet_secure(client_connpass, PacketHeader.SUCCESS, b"DONE"))
         
-        t = threading.Thread(target=self._connection_handler, args=(nickname, client, (addr, port), nickname, client_connpass,))
+        t = threading.Thread(target=self._connection_handler, args=(client, (addr, port), nickname, client_connpass,))
         self._clients.update({nickname: {
             'socket': client,
             'thread': t,
@@ -255,7 +256,7 @@ class DeepRiver_Server:
 
     def _connection_handler(self, client: socket.socket, host: tuple, nickname: str, connpass):
         ident = threading.get_ident()
-        self._log(f"CONNECTION:{ident}", f"Connection handler thread {ident} started ({host[0]}:{host[1]})")
+        self._log(f"CONNECTION:{ident}", f"Connection handler thread {ident} started ({nickname})")
         client.settimeout(self._idle_timeout if self._idle_timeout != 0 else None)
         while True:
             data = self._parse_packet_secure(connpass, client.recv(4096))
@@ -269,8 +270,11 @@ class DeepRiver_Server:
 
             if data['header'] == PacketHeader.DISCONNECT:
                 self._disconnect_client(client)
-                del self._clients[c]
-                return
+                del self._clients[nickname]
+                break
+        self._log(f"CONNECTION:{ident}", f"{nickname} disconnected from the server.")
+        return True
+        
 
     def _log(self, name, message, mtype="info"):
         print(f"[*] ({name}) >> {message}")
@@ -451,6 +455,8 @@ class DeepRiver_Server:
         if len(nickname) > NICKNAME_MAX_SIZE:
             return False
         
-        if not re.match(r'^[a-zA-Z0-9\-\_]$', nickname):
+        if not re.match(r'^[a-zA-Z0-9\-\_]*$', nickname):
+            print(nickname)
+            print("HEREHRHEJRH")
             return False
         return True
