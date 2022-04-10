@@ -2,12 +2,11 @@ import os
 import configparser
 import re
 import socket
-from struct import pack
 import threading
 from base64 import b64encode, b64decode
 import platform
 import random
-from crypto import Cryptography
+from inc.crypto import Cryptography
 crypt = Cryptography()
 
 # ===========[ ERRORS ]===========
@@ -22,7 +21,7 @@ class InvalidConfig(Exception):
     pass
 
 # ===========[ ENUMS ]===========
-from enums import *
+from inc.enums import *
 
 # ===========[ DeepRiver_Server ]===========
 class DeepRiver_Server:
@@ -33,8 +32,19 @@ class DeepRiver_Server:
         if config:
             self._parse_config(config)
         
-        self._clients = []
+        self._STOP_CODE = crypt.generate_aes_key()
+        self._IS_STOPPED = False
+
+        self._preconnections = {}
+        self._clients = {}
     
+    def stop(self):
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.connect((self._host, self._port))
+        s.recv(4096)
+        s.send(b'STOP ' + b64encode(self._STOP_CODE))
+        return
+
     def start(self):
         self._log("MAIN", f"DeepRiver Server {self.__version__}")
         self._log("MAIN", f"Starting server...")
@@ -44,6 +54,8 @@ class DeepRiver_Server:
         self._log("MAIN", f"Server started, listener active on {self._host}:{self._port}")
         while True:
             client, addr = self._server.accept()
+            if self._IS_STOPPED:
+                break
             addr = addr[0]
             port = addr[1]
             self._log("MAIN", f"Connection recieved from {addr}")
@@ -53,9 +65,12 @@ class DeepRiver_Server:
             threading.Thread(target=self._connection_init, args=(client,addr,port)).start()
             self._log("MAIN", f"Pre-connection thread spawned for {addr}")
 
+        self._log("MAIN", f"Server closing...")
+        return True
     
     def _connection_init(self, client: socket.socket, addr, port):
         ident = threading.get_ident()
+        self._preconnections.update({ident: client})
         self._log(f"PRECONNECTION:{ident}", f"Pre-connection thread {ident} started ({addr}:{port})")
         client.settimeout(self._connection_init_timeout if self._connection_init_timeout != 0 else None)
 
@@ -76,12 +91,34 @@ class DeepRiver_Server:
         except Exception as e:
             self._disconnect_client(client)
             self._log(f"PRECONNECTION:{ident}", f"Client timed out. Closing thread...")
+            del self._preconnections[ident]
+            return
+
+        if data['header'] == PacketHeader.STOP:
+            if addr != '127.0.0.1':
+                client.send(self._build_packet(PacketHeader.ERROR, ServerErrors.INVALID_PACKET_HEADER))
+                self._disconnect_client(client)
+                self._log(f"PRECONNECTION:{ident}", f"Recieved a wrong header. Closing thread...")
+                del self._preconnections[ident]
+                return
+            if data['payload'] != self._STOP_CODE:
+                client.send(self._build_packet(PacketHeader.ERROR, ServerErrors.INVALID_PACKET_HEADER))
+                self._disconnect_client(client)
+                self._log(f"PRECONNECTION:{ident}", f"Recieved a wrong header. Closing thread...")
+                del self._preconnections[ident]
+                return
+            self._IS_STOPPED = True
+            for c in self._clients:
+                self._disconnect_client(self._clients[c]['socket'])
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.connect((self._host, self._port))
             return
 
         if data['header'] != PacketHeader.PUBLIC_KEY:
             client.send(self._build_packet(PacketHeader.ERROR, ServerErrors.INVALID_PACKET_HEADER))
             self._disconnect_client(client)
             self._log(f"PRECONNECTION:{ident}", f"Recieved a wrong header. Closing thread...")
+            del self._preconnections[ident]
             return
 
         client_public_key = data['payload']
@@ -93,6 +130,7 @@ class DeepRiver_Server:
             client.send(self._build_packet(PacketHeader.ERROR, ServerErrors.INVALID_PUBLIC_KEY))
             self._disconnect_client(client)
             self._log(f"PRECONNECTION:{ident}", f"Recieved invalid client public key. Closing thread...")
+            del self._preconnections[ident]
             return
         client.send(self._build_packet(PacketHeader.CHAL, chal_enc))
 
@@ -101,16 +139,19 @@ class DeepRiver_Server:
         except socket.error:
             self._disconnect_client(client)
             self._log(f"PRECONNECTION:{ident}", f"Client timed out. Closing thread...")
+            del self._preconnections[ident]
             return
         except Exception as e:
             self._disconnect_client(client)
             self._log(f"PRECONNECTION:{ident}", f"Urecognized error: {e}")
+            del self._preconnections[ident]
             return
         
         if data['header'] != PacketHeader.CHAL:
             client.send(self._build_packet(PacketHeader.ERROR, ServerErrors.INVALID_PACKET_HEADER))
             self._disconnect_client(client)
             self._log(f"PRECONNECTION:{ident}", f"Recieved a wrong header. Closing thread...")
+            del self._preconnections[ident]
             return
         try:
             client_chal_int = int(crypt.rsa_decrypt(self._private_key, data['payload']))
@@ -118,13 +159,17 @@ class DeepRiver_Server:
                 client.send(self._build_packet(PacketHeader.ERROR, ServerErrors.CHALLENGE_FAILED))
                 self._disconnect_client(client)
                 self._log(f"PRECONNECTION:{ident}", f"Client failed the challenge. Closing thread...")
+                del self._preconnections[ident]
                 return
         except:
             client.send(self._build_packet(PacketHeader.ERROR, ServerErrors.CHALLENGE_FAILED))
             self._disconnect_client(client)
             self._log(f"PRECONNECTION:{ident}", f"Client failed the challenge. Closing thread...")
+            del self._preconnections[ident]
             return
         
+        #FIXME: Add password verification for semiprivate and private servers
+
         client_connpass = crypt.generate_aes_key()
         client.send(self._build_packet(PacketHeader.CONNPASS, crypt.rsa_encrypt(client_public_key, b64encode(client_connpass))))
 
@@ -138,10 +183,12 @@ class DeepRiver_Server:
                 client.send(self._build_packet(PacketHeader.ERROR, ServerErrors.INVALID_PACKET_HEADER))
                 self._disconnect_client(client)
                 self._log(f"PRECONNECTION:{ident}", f"Recieved a wrong header. Closing thread...")
+                del self._preconnections[ident]
                 return
         except:
             self._disconnect_client(client)
             self._log(f"PRECONNECTION:{ident}", f"Client sent malformed challenge. Closing thread...")
+            del self._preconnections[ident]
             return
         
         try:
@@ -150,11 +197,13 @@ class DeepRiver_Server:
                 client.send(self._build_packet(PacketHeader.ERROR, ServerErrors.CHALLENGE_FAILED))
                 self._disconnect_client(client)
                 self._log(f"PRECONNECTION:{ident}", f"Client failed the challenge. Closing thread...")
+                del self._preconnections[ident]
                 return
         except:
             client.send(self._build_packet(PacketHeader.ERROR, ServerErrors.CHALLENGE_FAILED))
             self._disconnect_client(client)
             self._log(f"PRECONNECTION:{ident}", f"Client failed the challenge. Closing thread...")
+            del self._preconnections[ident]
 
         client.send(self._build_packet_secure(client_connpass, PacketHeader.SUCCESS, "DONE"))
         
@@ -165,43 +214,63 @@ class DeepRiver_Server:
                 client.send(self._build_packet(PacketHeader.ERROR, ServerErrors.INVALID_PACKET_HEADER))
                 self._disconnect_client(client)
                 self._log(f"PRECONNECTION:{ident}", f"Recieved a wrong header. Closing thread...")
+                del self._preconnections[ident]
                 return
         except:
             self._disconnect_client(client)
-            self._log(f"PRECONNECTION:{ident}", f"Client sent malformed challenge. Closing thread...")
+            self._log(f"PRECONNECTION:{ident}", f"Client sent malformed nickname packet. Closing thread...")
+            del self._preconnections[ident]
             return
 
         if not self._check_nickname(data['payload']):
             client.send(self._build_packet(PacketHeader.ERROR, ServerErrors.INVALID_NICKNAME))
             self._disconnect_client(client)
             self._log(f"PRECONNECTION:{ident}", f"Recieved an invalid nickname. Closing thread...")
+            del self._preconnections[ident]
             return
 
-        for client in self._clients:
-            if client['nickname'] == data['payload']:
+        for c in self._clients:
+            if c == data['payload']:
                 client.send(self._build_packet(PacketHeader.ERROR, ServerErrors.NICKNAME_TAKEN))
                 self._disconnect_client(client)
                 self._log(f"PRECONNECTION:{ident}", f"Recieved a taken nickname. Closing thread...")
+                del self._preconnections[ident]
                 return
         nickname = data['payload']
         client.send(self._build_packet_secure(client_connpass, PacketHeader.SUCCESS, b"DONE"))
         
         t = threading.Thread(target=self._connection_handler, args=(nickname, client, (addr, port), nickname, client_connpass,))
-        self._clients.append({
+        self._clients.update({nickname: {
+            'socket': client,
             'thread': t,
-            'nickname': nickname,
             'host': (addr, port),
             'connpass': client_connpass
-        })
+        }})
         
         self._log(f"PRECONNECTION:{ident}", f"Client connected! Spawning connection handler thread...")
         t.start()
         self._log(f"PRECONNECTION:{ident}", f"Connection handler thread spawned! Closing preconnection thread...")
+        del self._preconnections[ident]
         return
 
-    def _connection_handler(self, client: socket.socket, host: tuple, nickname: str, conpass):
-        self._disconnect_client(client)
-        pass
+    def _connection_handler(self, client: socket.socket, host: tuple, nickname: str, connpass):
+        ident = threading.get_ident()
+        self._log(f"CONNECTION:{ident}", f"Connection handler thread {ident} started ({host[0]}:{host[1]})")
+        client.settimeout(self._idle_timeout if self._idle_timeout != 0 else None)
+        while True:
+            data = self._parse_packet_secure(connpass, client.recv(4096))
+            if data['header'] == PacketHeader.MSG_NORMAL:
+                for c in self._clients:
+                    try:
+                        self._clients[c]['socket'].send(self._build_packet_secure(self._clients[c]['connapss'], data['payload']))
+                    except:
+                        self._log(f"CONNECTION:{ident}", f"{nickname} failed to send message to {c}")
+                continue
+
+            if data['header'] == PacketHeader.DISCONNECT:
+                self._disconnect_client(client)
+                del self._clients[c]
+                return
 
     def _log(self, name, message, mtype="info"):
         print(f"[*] ({name}) >> {message}")
@@ -213,7 +282,11 @@ class DeepRiver_Server:
         client.close()
 
     def _disconnect_all_clients(self):
-        pass
+        for c in self._clients:
+            self._disconnect_client(self._clients[c]['socket'])
+        for c in self._preconnections:
+            self._disconnect_client(self._clients[c])
+        return
     
     def _build_packet(self, header: PacketHeader, payload) -> bytes:
         return header.encode() + b' ' + b64encode(payload.encode() if type(payload) != bytes else payload)
@@ -381,6 +454,3 @@ class DeepRiver_Server:
         if not re.match(r'^[a-zA-Z0-9\-\_]$', nickname):
             return False
         return True
-
-l = DeepRiver_Server()
-l.start()

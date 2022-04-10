@@ -6,6 +6,7 @@ class ServerType:
 
 class PacketHeader:
     ERROR = "ERROR"
+    STOP = "STOP"
     SUCCESS = "SUCCESS"
     BANNER = "BANNER"
     PUBLIC_KEY = "PUBLIC_KEY"
